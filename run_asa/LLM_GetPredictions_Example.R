@@ -1,3 +1,12 @@
+{
+# set WD 
+options(error = NULL)
+setwd("~/Documents/asa")
+
+# define some prelimaries 
+INITIALIZED_CUSTOM_ENV_TAG <- FALSE
+CustomLLMBackend <- "openai"
+
 # ---------------------------
 # Minimal Reproducible Interface AI Search Agent (No SQL)
 # ---------------------------
@@ -5,13 +14,14 @@
 # - Takes (person_name, country_, year_)
 # - Looks up PARTIES_OF_COUNTRY
 # - Builds the "e:" context block and a short instruction
-# - Either: (a) uses a deterministic mock model (default), or
-#           (b) calls OpenAI if OPENAI_API_KEY is set and model = "openai"
+# - Either: (a) uses a mock model illustration only or
+#           (b) calls custom AI search agent protocol (assumes OPENAI_API_KEY is set)
 # - Parses model JSON and returns a simple list of values
 
 # Dependencies:
+#   conda environment called CustomLLMSearch (see README.md)
 #   install.packages("jsonlite")      # required
-#   install.packages("httr")          # only if you plan to use model = "openai"
+#   install.packages("httr")   
 
 suppressWarnings(suppressMessages({
   if (!requireNamespace("jsonlite", quietly = TRUE)) {
@@ -21,7 +31,6 @@ suppressWarnings(suppressMessages({
 
 # ---------------------------
 # 1) Tiny, illustrative country -> parties map
-#    (Edit/extend as needed for your demo)
 # ---------------------------
 country_party_map <- list(
   "United States of America" = c("Democratic Party", "Republican Party", "Libertarian Party", "Green Party"),
@@ -41,11 +50,7 @@ CleanText <- function(x) {
   x
 }
 
-# ---------------------------
-# 3) Build the exact "e:" context block + minimal instruction
-# ---------------------------
 build_prompt <- function(person_name, country_, year_, options_of_country) {
-  # "e:" block exactly as requested
   e_block <- paste0(
     "e: ", CleanText(person_name),
     "\n", "- Country: ", country_,
@@ -74,11 +79,7 @@ build_prompt <- function(person_name, country_, year_, options_of_country) {
 # 4) Deterministic mock model (default)
 #     - Minimal, reproducible behavior without any API keys
 # ---------------------------
-mock_model <- function(prompt, options_of_country) {
-  # A tiny, deterministic heuristic so the demo is reproducible and transparent:
-  # - If the prompt mentions a token matching the start of a party name (case-insensitive),
-  #   prefer that party; otherwise pick the first option.
-  set.seed(42)
+call_test_agent <- function(prompt, options_of_country) {
   candidate <- options_of_country[1]
   lower_prompt <- tolower(prompt)
   for (p in options_of_country) {
@@ -99,10 +100,10 @@ mock_model <- function(prompt, options_of_country) {
 }
 
 # ---------------------------
-# 5) Optional: call OpenAI (only if you want live LLM; not needed for MRE)
+# 5) Call Agent
 #    Set env var: Sys.setenv(OPENAI_API_KEY = "sk-...")
 # ---------------------------
-call_openai <- function(prompt, model = "gpt5-nano") {
+call_real_agent <- function(prompt, model = "gpt5-nano") {
   if (!requireNamespace("httr", quietly = TRUE)) {
     stop("To use model='openai', please install httr: install.packages('httr')", call. = FALSE)
   }
@@ -112,7 +113,30 @@ call_openai <- function(prompt, model = "gpt5-nano") {
   }
   
   # Minimal, stable call; adjust 'model' if you prefer a different one.
- XXX12344321 
+  # ---- Custom ASA invocation (no direct HTTP call here) ----
+  # Variables consumed by the ASA scripts (seen via local=TRUE scoping)
+  thePrompt <- prompt
+  CustomLLMBackend <- "openai"                 # or "grok"/"exo" if you prefer
+  modelName <- model
+  
+  # 1) Helpers (safe if unused) + 2) initialize ASA + 3) run ASA
+  source("./run_asa/Internal/LLM_Helpers.R",              local = TRUE)  # helper fns
+  source("./run_asa/Internal/LLM_CustomLLM_Invokation.R", local = TRUE)  # run (uses thePrompt)
+  
+  # Collect agent result placed by the ASA script
+  content_txt <- tryCatch({
+    if (exists("response", inherits = FALSE) &&
+        is.list(response) &&
+        isTRUE(response$status_code == 200L)) {
+      response$message
+    } else if (exists("theResponseText", inherits = FALSE) &&
+               is.character(theResponseText) && nzchar(theResponseText)) {
+      theResponseText
+    } else {
+      NA_character_
+    }
+  }, error = function(e) NA_character_)
+  
  
   if (is.na(content_txt)) {
     stop("OpenAI response did not include choices[[1]]$message$content.", call. = FALSE)
@@ -138,8 +162,7 @@ extract_json <- function(x) {
 predict_pol_party <- function(person_name,
                               country_,
                               year_,
-                              model = c("mock", "openai")) {
-  model <- match.arg(model)
+                              model) {
   # Lookup options for this country
   options_of_country <- country_party_map[[country_]]
   if (is.null(options_of_country)) {
@@ -152,9 +175,9 @@ predict_pol_party <- function(person_name,
   
   # Get a response
   raw_output <- if (model == "mock") {
-    mock_model(thePrompt, options_of_country)
+    call_test_agent(thePrompt, options_of_country)
   } else {
-    call_openai(thePrompt)
+    call_real_agent( thePrompt, model = model)
   }
   
   # Parse model JSON
@@ -169,7 +192,6 @@ predict_pol_party <- function(person_name,
     prompt_sent_to_model      = thePrompt,
     raw_output_from_model     = raw_output
   )
-  class(out) <- c("pol_party_prediction", class(out))
   out
 }
 
@@ -188,26 +210,32 @@ print.pol_party_prediction <- function(x, ...) {
 # ---------------------------
 # 9) Tiny demo (safe to leave in; does nothing unless you run it)
 # ---------------------------
-demo_run <- function(model = "mock") {
-  # Change these three inputs for quick tests:
-  person_name <- "Jane Doe"
-  country_    <- "India"
-  year_       <- 2014
-  
+asa_run <- function(person_name, 
+                     country_, 
+                     year_,
+                     model) {
   res <- predict_pol_party(person_name, country_, year_, 
-                           model = "mock")
-  print(res)
+                           model = model)
   
   cat("\n--- Prompt sent to model:---\n")
   cat(res$prompt_sent_to_model, "\n")
+  return(res)
 }
 
-# Uncomment to run a demo when sourcing the file:
-# demo_run(model = "mock") #  NO AI search (illustrative only)
-demo_run(model = "mock") #  AI search agent run (requires OpenAI API key saved in .RProfile)
+# initialize agent (do once)
+source("./run_asa/Internal/LLM_CustomLLM_Invokation.R", local = TRUE)  # init (sets tag TRUE)
 
-
-# In production model, we run demo_mode using a SQL database. See Dropbox link for full codebase.
-
-
-
+# run agent 
+results <- 
+  asa_run(person_name = "Shashi Tharoor",
+        country_  = "India",
+        year_  = 2014,
+        model = "mock"  #  NO AI search (illustrative only)
+        #model = "gpt-5-nano" 
+        #  AI search agent run (requires OpenAI API key saved in .RProfile file as OPENAI_API_KEY)
+  )
+results$pol_party
+# In production model, we run the search agent using a SQL database
+# for read/write backbone. 
+# See Dropbox link for full codebase.
+}
